@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Iterable, List, NamedTuple
 
 import requests
+from dotenv import load_dotenv
 from github import Github
 from github.ContentFile import ContentFile
 
@@ -20,8 +21,8 @@ def download_rmg_models():
             else:
                 yield DownloadPath(data_path / content.path, content.download_url)
 
-    TIMEOUT = 10  # seconds
-    PAT = os.environ.get("PAT")
+    load_dotenv()
+    PAT = os.getenv("PAT")
     g = Github(PAT)
     owner_name = "kianmehrabani"
     repo_name = "RMG-models"
