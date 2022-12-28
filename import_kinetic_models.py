@@ -1,19 +1,26 @@
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List, NamedTuple
 
 import requests
 from github import Github
 from github.ContentFile import ContentFile
 
+
+class DownloadPath(NamedTuple):
+    path: Path
+    download_url: str
+
+
 def download_rmg_models():
-    def get_paths(contents: list[ContentFile]) -> Iterable[tuple[Path, str]]:
+    def get_paths(contents: List[ContentFile]) -> Iterable[DownloadPath]:
         for content in contents:
             if content.type == "dir":
                 yield from get_paths(repo.get_contents(content.path))
             else:
-                yield (data_path / content.path, content.download_url)
+                yield DownloadPath(data_path / content.path, content.download_url)
 
+    TIMEOUT = 10  # seconds
     PAT = os.environ.get("PAT")
     g = Github(PAT)
     owner_name = "kianmehrabani"
@@ -25,5 +32,5 @@ def download_rmg_models():
 
     for path, url in paths:
         path.parent.mkdir(exist_ok=True, parents=True)
-        content = requests.get(url).content
+        content = requests.get(url, timeout=TIMEOUT).content
         path.write_bytes(content)
