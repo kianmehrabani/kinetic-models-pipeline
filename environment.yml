@@ -1,4 +1,4 @@
-name: kmp
+name: base
 channels:
   - defaults
   - rmg
@@ -10,6 +10,7 @@ dependencies:
   - requests
   - PyGithub
   - python-dotenv
+  - habanero
   - pip
   - pip:
     - datamodel-code-generator[http]
