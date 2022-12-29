@@ -10,3 +10,6 @@ dependencies:
   - requests
   - PyGithub
   - python-dotenv
+  - pip
+  - pip:
+    - datamodel-code-generator[http]
