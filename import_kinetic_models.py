@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from github import Github
 from github.ContentFile import ContentFile
 from github.Repository import Repository
+from rmgpy.data.thermo import ThermoLibrary
+from rmgpy.thermo import NASA, ThermoData, Wilhoit, NASAPolynomial
 
 from models import KineticModel, Kinetics, Source, Author, Thermo, Transport, Species, Isomer, Structure, NamedSpecies
 
@@ -111,6 +113,8 @@ class DOIError(Exception):
 
 
 def create_authors(author_entries: Iterable[Any]) -> Iterable[Author]:
+    if author_entries is None:
+        raise MissingAuthorData()
     for entry in author_entries:
         if entry.given is None or entry.family is None:
             raise InvalidAuthorData(entry)
@@ -152,39 +156,65 @@ def get_doi(source_path: Path):
         return matched_list[0]
 
 
-def create_source(path: Path) -> Source:
-    crossref = habanero.Crossref(mailto="kianmehrabani@gmail.com")
-    doi = get_doi(path)
-    reference = crossref.works(ids=doi).get("message", "") if doi else {}
-    created_info = reference.get("created", {})
-    date = parser.parse(created_info.get("date-time", "")) if created_info else None
-    year = date.year if date else ""
-    title_body = reference.get("title", "")
-    source_title = title_body[0] if isinstance(title_body, list) else title_body
-    name_body = reference.get("short-container-title", "")
-    journal_name = name_body[0] if isinstance(name_body, list) else name_body
-    volume_number = reference.get("volume", "")
-    page_numbers = reference.get("page", "")
-    author_data = reference.get("author")
+def create_source(path: Path) -> Optional[Source]:
+    try:
+        crossref = habanero.Crossref(mailto="kianmehrabani@gmail.com")
+        doi = get_doi(path)
+        reference = crossref.works(ids=doi).get("message", "") if doi else {}
+        created_info = reference.get("created", {})
+        date = parser.parse(created_info.get("date-time", "")) if created_info else None
+        year = date.year if date else ""
+        title_body = reference.get("title", "")
+        source_title = title_body[0] if isinstance(title_body, list) else title_body
+        name_body = reference.get("short-container-title", "")
+        journal_name = name_body[0] if isinstance(name_body, list) else name_body
+        volume_number = reference.get("volume", "")
+        page_numbers = reference.get("page", "")
+        author_data = reference.get("author")
+        authors = create_authors(author_data)
 
-    if author_data is None:
-        raise MissingAuthorData(path.name)
+        return Source(
+            doi=doi,
+            publication_year=year,
+            title=source_title,
+            journal_name=journal_name,
+            journal_volume=volume_number,
+            page_numbers=page_numbers,
+            authors=list(authors),
+        )
+    except (InvalidAuthorData, DOIError, ValidationError) as e:
+        return None
 
-    authors = create_authors(author_data)
-
-    return Source(
-        doi=doi,
-        publication_year=year,
-        title=source_title,
-        journal_name=journal_name,
-        journal_volume=volume_number,
-        page_numbers=page_numbers,
-        authors=list(authors),
-    )
 
 
 def create_thermo(path: Path) -> Tuple[Iterable[Thermo], Iterable[NamedSpecies]]:
-    ...
+    local_context = {
+        "ThermoData": ThermoData,
+        "Wilhoit": Wilhoit,
+        "NASAPolynomial": NASAPolynomial,
+        "NASA": NASA,
+    }
+    library = ThermoLibrary(label=path)
+    library.SKIP_DUPLICATES = True
+    library.load(thermo_path, local_context=local_context)
+    for species_name, entry in library.entries.items():
+        try:
+            species = create_species(species_name, entry.item)
+            thermo_data = entry.data
+            poly1, poly2 = thermo_data.polynomials
+            thermo = Thermo(
+                species=species,
+                coeffs_poly1=poly1.coeffs.tolist(),
+                coeffs_poly2=poly2.coeffs.tolist(),
+                temp_min_1=poly1.Tmin.value_si,
+                temp_max_1=poly1.Tmax.value_si,
+                temp_min_2=poly2.Tmin.value_si,
+                temp_max_2=poly2.Tmax.value_si,
+            )
+
+            yield thermo, species
+        except ():
+            pass
 
 
 def create_kinetics(path: Path) -> Tuple[Iterable[Kinetics], Iterable[NamedSpecies]]:
@@ -204,8 +234,9 @@ def create_kinetic_model(model_dir: ModelDir) -> KineticModel:
             kinetics=kinetics,
             source=source,
         ) # type: ignore
+    except Exception:
+        pass
 
-    catch 
 
 def import_rmg_models(endpoint: str, data_path: Path = Path("rmg-models")) -> None:
     model_dirs = get_model_paths(data_path)

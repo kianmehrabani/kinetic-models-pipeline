@@ -11,6 +11,8 @@ dependencies:
   - PyGithub
   - python-dotenv
   - habanero
+  - pydantic
+  - gxx_linux-64
   - pip
   - pip:
     - datamodel-code-generator[http]
