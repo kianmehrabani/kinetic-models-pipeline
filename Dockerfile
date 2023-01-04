@@ -13,12 +13,16 @@ RUN git clone https://github.com/ReactionMechanismGenerator/RMG-Py.git /rmg
 ENV PYTHONUNBUFFERED=1
 RUN micromamba install --yes --name base --file environment.yml && \
     micromamba clean --all --yes
-RUN make minimal
 
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
+RUN make
+
 ENV PYTHONPATH="/rmg/rmgpy:$PYTHONPATH"
 
 WORKDIR /app
+COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/env.yaml
+RUN micromamba install -y -n base -f /tmp/env.yaml && \
+    micromamba clean --all --yes
 COPY . .
 
 CMD [ "python", "import_kinetic_models.py" ]
