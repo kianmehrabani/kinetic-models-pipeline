@@ -23,6 +23,9 @@ WORKDIR /app
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/env.yaml
 RUN micromamba install -y -n base -f /tmp/env.yaml && \
     micromamba clean --all --yes
+USER root
+RUN apt update && apt -y install libxrender1
+USER $MAMBA_USER
 COPY . .
 
-CMD [ "python", "import_kinetic_models.py" ]
+CMD [ "python", "main.py" ]

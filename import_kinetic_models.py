@@ -2,29 +2,23 @@ import os
 from pathlib import Path
 import re
 from typing import Any, Iterable, List, NamedTuple, Optional, Tuple, Union
-from multiprocessing import Pool, cpu_count
 from dateutil import parser
 
 
 import habanero
 import requests
+from pydantic import ValidationError
 from dotenv import load_dotenv
-from github import Github
-from github.ContentFile import ContentFile
-from github.Repository import Repository
+from rmgpy import kinetics, constants
+from rmgpy.data.kinetics.library import KineticsLibrary
 from rmgpy.data.thermo import ThermoLibrary
 from rmgpy.thermo import NASA, ThermoData, Wilhoit, NASAPolynomial
 
-from models import KineticModel, Kinetics, Source, Author, Thermo, Transport, Species, Isomer, Structure, NamedSpecies
+from models import Arrhenius, ArrheniusEP, KineticModel, Kinetics, Reaction, Source, Author, Thermo, Transport, Species, Isomer, Structure, NamedSpecies
 
 load_dotenv()
 
 Seconds = Union[int, float]
-
-
-class DownloadPath(NamedTuple):
-    path: Path
-    download_url: str
 
 
 class ModelDir(NamedTuple):
@@ -36,34 +30,6 @@ class ModelDir(NamedTuple):
 
 class EnvironmentVariableMissing(Exception):
     pass
-
-
-def get_paths(repo: Repository, data_path: Path, contents: List[ContentFile]) -> Iterable[DownloadPath]:
-    for content in contents:
-        if content.type == "dir":
-            yield from get_paths(repo, data_path, repo.get_contents(content.path))
-        else:
-            yield DownloadPath(data_path / content.path, content.download_url)
-
-
-def download(download_path: DownloadPath, timeout: Seconds = 10) -> None:
-    path, url = download_path
-    path.parent.mkdir(exist_ok=True, parents=True)
-    content = requests.get(url, timeout=timeout).content
-    path.write_bytes(content)
-
-
-def download_rmg_models(data_path: Path = Path("rmg-models")) -> None:
-    PAT = os.getenv("PAT")
-    g = Github(PAT)
-    owner_name = "kianmehrabani"
-    repo_name = "RMG-models"
-    repo = g.get_repo(f"{owner_name}/{repo_name}")
-    contents: list[ContentFile] = repo.get_contents("")
-    paths = get_paths(repo, data_path, contents)
-
-    thread_pool = Pool(cpu_count())
-    thread_pool.map(download, paths)
 
 
 def get_model_paths(data_path: Path, ignore_list: List[str] = []) -> Iterable[ModelDir]:
@@ -186,8 +152,24 @@ def create_source(path: Path) -> Optional[Source]:
         return None
 
 
+def create_species(molecule) -> Species:
+    formula = molecule.get_formula()
+    inchi = molecule.to_augmented_inchi()
+    smiles = molecule.to_smiles()
+    adjacency_list = molecule.to_adjacency_list()
+    multiplicity = molecule.multiplicity
 
-def create_thermo(path: Path) -> Tuple[Iterable[Thermo], Iterable[NamedSpecies]]:
+    structure = Structure(smiles=smiles, adjacency_list=adjacency_list, multiplicity=multiplicity)
+    isomer = Isomer(formula=formula, inchi=inchi, structures=[structure])
+
+    return Species(isomers=[isomer])
+
+
+def create_named_species(name: str, molecule) -> NamedSpecies:
+    return NamedSpecies(name, create_species(molecule))
+
+
+def create_thermo(path: Path) -> Iterable[Tuple[Thermo, NamedSpecies]]:
     local_context = {
         "ThermoData": ThermoData,
         "Wilhoit": Wilhoit,
@@ -196,46 +178,81 @@ def create_thermo(path: Path) -> Tuple[Iterable[Thermo], Iterable[NamedSpecies]]
     }
     library = ThermoLibrary(label=path)
     library.SKIP_DUPLICATES = True
-    library.load(thermo_path, local_context=local_context)
+    library.load(path, local_context=local_context)
     for species_name, entry in library.entries.items():
-        try:
-            species = create_species(species_name, entry.item)
-            thermo_data = entry.data
-            poly1, poly2 = thermo_data.polynomials
-            thermo = Thermo(
-                species=species,
-                coeffs_poly1=poly1.coeffs.tolist(),
-                coeffs_poly2=poly2.coeffs.tolist(),
-                temp_min_1=poly1.Tmin.value_si,
-                temp_max_1=poly1.Tmax.value_si,
-                temp_min_2=poly2.Tmin.value_si,
-                temp_max_2=poly2.Tmax.value_si,
-            )
+        species = create_named_species(species_name, entry.item)
+        thermo_data = entry.data
+        poly1, poly2 = thermo_data.polynomials
+        thermo = Thermo(
+            species=species,
+            polynomial1=poly1.coeffs.tolist(),
+            polynomial2=poly2.coeffs.tolist(),
+            temp_min_1=poly1.Tmin.value_si,
+            temp_max_1=poly1.Tmax.value_si,
+            temp_min_2=poly2.Tmin.value_si,
+            temp_max_2=poly2.Tmax.value_si,
+        )
 
-            yield thermo, species
-        except ():
-            pass
+        yield thermo, species
 
 
-def create_kinetics(path: Path) -> Tuple[Iterable[Kinetics], Iterable[NamedSpecies]]:
+def create_reaction(rmg_reaction) -> Reaction:
     ...
 
+def create_kinetics_data(rmg_kinetics_data) -> Union[Arrhenius, ArrheniusEP]:
+    ...
+
+def create_kinetics(path: Path) -> Iterable[Kinetics]:
+    local_context = {
+        "KineticsData": kinetics.KineticsData,
+        "Arrhenius": kinetics.Arrhenius,
+        "ArrheniusEP": kinetics.ArrheniusEP,
+        "MultiArrhenius": kinetics.MultiArrhenius,
+        "MultiPDepArrhenius": kinetics.MultiPDepArrhenius,
+        "PDepArrhenius": kinetics.PDepArrhenius,
+        "Chebyshev": kinetics.Chebyshev,
+        "ThirdBody": kinetics.ThirdBody,
+        "Lindemann": kinetics.Lindemann,
+        "Troe": kinetics.Troe,
+        "R": constants.R,
+    }
+    library = KineticsLibrary(label=path)
+    library.SKIP_DUPLICATES = True
+    library.load(path, local_context=local_context)
+    for entry in library.entries.values():
+        rmg_kinetics_data = entry.data
+        rmg_reaction = entry.item
+        reaction = create_reaction(rmg_reaction)
+        kinetics_data = create_kinetics_data(rmg_kinetics_data)
+
+        min_temp = getattr(rmg_kinetics_data.Tmin, "value_si", None)
+        max_temp = getattr(rmg_kinetics_data.Tmax, "value_si", None)
+        min_pressure = getattr(rmg_kinetics_data.Pmin, "value_si", None)
+        max_pressure = getattr(rmg_kinetics_data.Pmax, "value_si", None)
+
+        yield Kinetics(
+            reaction=reaction,
+            data=kinetics_data,
+            source=None,
+            for_reverse=False,
+            min_temp=min_temp,
+            max_temp=max_temp,
+            min_pressure=min_pressure,
+            max_pressure=max_pressure,
+        )
 
 def create_kinetic_model(model_dir: ModelDir) -> KineticModel:
-    try:
-        source = create_source(model_dir.source_path)
-        thermo, named_species1 = create_thermo(model_dir.thermo_path)
-        kinetics, named_species2 = create_kinetics(model_dir.kinetics_path)
+    source = create_source(model_dir.source_path)
+    thermo, named_species = create_thermo(model_dir.thermo_path)
+    kinetics = create_kinetics(model_dir.kinetics_path)
 
-        return KineticModel(
-            name=model_dir.name,
-            named_species=[*named_species1, *named_species2],
-            thermo=thermo,
-            kinetics=kinetics,
-            source=source,
-        ) # type: ignore
-    except Exception:
-        pass
+    return KineticModel(
+        name=model_dir.name,
+        named_species=named_species,
+        thermo=thermo,
+        kinetics=kinetics,
+        source=source,
+    )
 
 
 def import_rmg_models(endpoint: str, data_path: Path = Path("rmg-models")) -> None:
@@ -245,8 +262,12 @@ def import_rmg_models(endpoint: str, data_path: Path = Path("rmg-models")) -> No
         response = requests.post(endpoint, data=km.json(exclude_none=True, exclude_unset=True))
 
 
-if __name__ == "__main__":
+def main():
     endpoint = os.getenv("POST_ENDPOINT")
     if endpoint is None:
         raise EnvironmentVariableMissing("POST_ENDPOINT not set")
     import_rmg_models(endpoint)
+
+
+if __name__ == "__main__":
+    main()
